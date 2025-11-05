@@ -132,4 +132,29 @@ app.get("/grant", async (req, res) => {
   } catch (e) { res.status(500).send(e.message); }
 });
 
+app.get("/debug/customer", async (req, res) => {
+  try {
+    const { email } = req.query;
+    const cust = await findCustomerByEmail(email);
+    if (!cust) return res.status(404).json({ error: "Customer not found" });
+
+    const mf = await getCustomerMetafields(cust.id);
+    let owned = [];
+    if (mf.owned_numbers?.value) { try { owned = JSON.parse(mf.owned_numbers.value); } catch {} }
+
+    res.json({
+      customer_id: cust.id,
+      email: cust.email,
+      metafields_keys: Object.keys(mf),
+      subscription_status: mf.subscription_status?.value || null,
+      subscription_expiry: mf.subscription_expiry?.value || null,
+      owned_numbers_count: owned.length,
+      owned_numbers: owned
+    });
+  } catch (e) {
+    res.status(500).send(e.message);
+  }
+});
+
+
 app.listen(PORT, () => console.log(`Festivio backend running on :${PORT}`));
