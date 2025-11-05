@@ -1,0 +1,135 @@
+import express from "express";
+import bodyParser from "body-parser";
+import fetch from "node-fetch";
+
+const {
+  PORT = 3000,
+  SHOPIFY_STORE,
+  SHOPIFY_ADMIN_TOKEN,
+  NUM_DEFAULT_AGE = "6-9"
+} = process.env;
+
+const app = express();
+app.use(bodyParser.json({ type: "*/*" }));
+
+// ---- Utils Shopify ----
+const sFetch = async (path, method = "GET", body) => {
+  const res = await fetch(`https://${SHOPIFY_STORE}/admin/api/2024-10/${path}`, {
+    method,
+    headers: {
+      "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!res.ok) throw new Error(`[Shopify ${method} ${path}] ${res.status} ${await res.text()}`);
+  return res.json();
+};
+
+const findCustomerByEmail = async (email) => {
+  const data = await sFetch(`customers/search.json?query=email:${encodeURIComponent(email)}`);
+  return data.customers?.[0] || null;
+};
+const getCustomerMetafields = async (customerId) => {
+  const data = await sFetch(`customers/${customerId}/metafields.json`);
+  const mf = {};
+  for (const m of data.metafields || []) if (m.namespace === "festivio") mf[m.key] = m;
+  return mf;
+};
+const upsertMetafield = async (customerId, namespace, key, type, value) => {
+  try {
+    return (await sFetch(`metafields.json`, "POST", {
+      metafield: { namespace, key, type, value, owner_resource: "customer", owner_id: customerId }
+    })).metafield;
+  } catch {
+    const all = await sFetch(`customers/${customerId}/metafields.json`);
+    const found = (all.metafields || []).find(m => m.namespace === namespace && m.key === key);
+    if (!found) throw new Error("Metafield not found for update");
+    return (await sFetch(`metafields/${found.id}.json`, "PUT", {
+      metafield: { id: found.id, type, value }
+    })).metafield;
+  }
+};
+
+// --- mapping minimal pour tester ---
+const NUMEROS = {
+  "2025-11": {
+    "3-5": { "catalog": "https://heyzine.com/flip-book/xxx.html", "annexes": "https://heyzine.com/flip-book/yyy.html" },
+    "6-9": { "catalog": "https://heyzine.com/flip-book/aaa.html", "annexes": "https://heyzine.com/flip-book/bbb.html" }
+  }
+};
+const currentIssueKey = () => {
+  const d = new Date(); const y = d.getUTCFullYear(); const m = String(d.getUTCMonth()+1).padStart(2,"0");
+  return `${y}-${m}`;
+};
+const grantIssue = async (customerId, age, issueKey) => {
+  const mf = await getCustomerMetafields(customerId);
+  let owned = [];
+  if (mf.owned_numbers?.value) { try { owned = JSON.parse(mf.owned_numbers.value); } catch {} }
+  const conf = NUMEROS?.[issueKey]?.[age];
+  if (!conf) throw new Error(`No mapping for ${issueKey}/${age}`);
+  if (!owned.some(i => i.key === issueKey && i.age === age)) {
+    owned.push({ key: issueKey, age, catalog: conf.catalog, annexes: conf.annexes });
+  }
+  await upsertMetafield(customerId, "festivio", "owned_numbers", "json", JSON.stringify(owned));
+};
+const setStatus = (customerId, status) =>
+  upsertMetafield(customerId, "festivio", "subscription_status", "single_line_text_field", status);
+const setExpiryPlusMonths = async (customerId, months) => {
+  const d = new Date(); d.setMonth(d.getMonth()+months);
+  await upsertMetafield(customerId, "festivio", "subscription_expiry", "date", d.toISOString());
+};
+
+// ---- Webhooks ----
+app.post("/webhooks/seal/subscription_created", async (req, res) => {
+  try {
+    const p = req.body;
+    const email = p.customer?.email || p.customer_email;
+    const age = p.metadata?.age || p.age || NUM_DEFAULT_AGE;
+    const planType = p.plan_interval || p.plan_type || "month"; // month|year
+    const cust = await findCustomerByEmail(email);
+    if (!cust) throw new Error(`Customer not found: ${email}`);
+    await setStatus(cust.id, "active");
+    await setExpiryPlusMonths(cust.id, planType === "year" ? 12 : 1);
+    await grantIssue(cust.id, age, currentIssueKey());
+    res.status(200).send("ok");
+  } catch (e) { console.error(e); res.status(200).send("ok"); }
+});
+
+app.post("/webhooks/seal/renewal_billed", async (req, res) => {
+  try {
+    const p = req.body;
+    const email = p.customer?.email || p.customer_email;
+    const age = p.metadata?.age || p.age || NUM_DEFAULT_AGE;
+    const planType = p.plan_interval || p.plan_type || "month";
+    const cust = await findCustomerByEmail(email);
+    if (!cust) throw new Error(`Customer not found: ${email}`);
+    await setStatus(cust.id, "active");
+    await setExpiryPlusMonths(cust.id, planType === "year" ? 12 : 1);
+    await grantIssue(cust.id, age, currentIssueKey());
+    res.status(200).send("ok");
+  } catch (e) { console.error(e); res.status(200).send("ok"); }
+});
+
+app.post("/webhooks/seal/subscription_cancelled", async (req, res) => {
+  try {
+    const p = req.body;
+    const email = p.customer?.email || p.customer_email;
+    const cust = await findCustomerByEmail(email);
+    if (cust) await setStatus(cust.id, "cancelled");
+    res.status(200).send("ok");
+  } catch (e) { console.error(e); res.status(200).send("ok"); }
+});
+
+// Test manuel : /grant?email=...&age=6-9&issue=2025-11
+app.get("/grant", async (req, res) => {
+  try {
+    const { email, age = NUM_DEFAULT_AGE, issue = currentIssueKey() } = req.query;
+    const cust = await findCustomerByEmail(email);
+    if (!cust) throw new Error(`Customer not found: ${email}`);
+    await grantIssue(cust.id, age, issue);
+    res.send("granted");
+  } catch (e) { res.status(500).send(e.message); }
+});
+
+app.listen(PORT, () => console.log(`Festivio backend running on :${PORT}`));
