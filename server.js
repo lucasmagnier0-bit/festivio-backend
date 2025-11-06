@@ -96,7 +96,7 @@ app.post("/webhooks/seal/subscription_created", async (req, res) => {
   } catch (e) { console.error(e); res.status(200).send("ok"); }
 });
 
-app.post("/webhooks/seal/renewal_billed", async (req, res) => {
+app.post("/webhooks/seal/billing_succeeded", async (req, res) => {
   try {
     const p = req.body;
     const email = p.customer?.email || p.customer_email;
