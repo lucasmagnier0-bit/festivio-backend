@@ -114,22 +114,44 @@ const setExpiryPlusMonths = async (customerId, months) => {
   await upsertMetafield(customerId, "festivio", "subscription_expiry", "date", d.toISOString());
 };
 
-// ---- Webhooks ----
+// ---- Webhooks SEAL ----
+const processSealPayload = async (payload) => {
+  const email = payload.email || payload.customer?.email || payload.customer_email;
+  if (!email) throw new Error("Email not found in payload");
+
+  const cust = await findCustomerByEmail(email);
+  if (!cust) throw new Error(`Customer not found: ${email}`);
+
+  let prenom = payload.first_name || payload.s_first_name || "Enfant";
+  let nom = payload.last_name || payload.s_last_name || "";
+  let age = NUM_DEFAULT_AGE;
+
+  if (payload.items && payload.items[0]?.properties) {
+    const props = payload.items[0].properties;
+    for (const prop of props) {
+      if (prop.name?.toLowerCase() === "prenom") prenom = prop.value;
+      if (prop.name?.toLowerCase() === "age") age = prop.value;
+    }
+  } else if (payload.metadata?.prenom) {
+    prenom = payload.metadata.prenom;
+    age = payload.metadata.age || NUM_DEFAULT_AGE;
+  }
+
+  const planType = payload.billing_interval || "month";
+  const monthsToAdd = planType === "year" ? 12 : 1;
+  const issueKey = currentIssueKey();
+
+  await setStatus(cust.id, "active");
+  await setExpiryPlusMonths(cust.id, monthsToAdd);
+  await grantIssue(cust.id, age, issueKey);
+
+  return { email, prenom, age, planType };
+};
+
 app.post("/webhooks/seal/subscription_created", async (req, res) => {
   try {
-    const p = req.body;
-    const email = p.customer?.email || p.customer_email;
-    const age = p.metadata?.age || p.age || NUM_DEFAULT_AGE;
-    const planType = p.plan_interval || p.plan_type || "month";
-    const issueKey = currentIssueKey();
-
-    const cust = await findCustomerByEmail(email);
-    if (!cust) throw new Error(`Customer not found: ${email}`);
-
-    await setStatus(cust.id, "active");
-    await setExpiryPlusMonths(cust.id, planType === "year" ? 12 : 1);
-    await grantIssue(cust.id, age, issueKey);
-
+    const info = await processSealPayload(req.body);
+    console.log(`[WEBHOOK] subscription_created processed for ${info.email} (${info.prenom}, ${info.age} ans, ${info.planType})`);
     res.status(200).send("ok");
   } catch (e) {
     console.error(e);
@@ -139,19 +161,8 @@ app.post("/webhooks/seal/subscription_created", async (req, res) => {
 
 app.post("/webhooks/seal/billing_succeeded", async (req, res) => {
   try {
-    const p = req.body;
-    const email = p.customer?.email || p.customer_email;
-    const age = p.metadata?.age || p.age || NUM_DEFAULT_AGE;
-    const planType = p.plan_interval || p.plan_type || "month";
-    const issueKey = currentIssueKey();
-
-    const cust = await findCustomerByEmail(email);
-    if (!cust) throw new Error(`Customer not found: ${email}`);
-
-    await setStatus(cust.id, "active");
-    await setExpiryPlusMonths(cust.id, planType === "year" ? 12 : 1);
-    await grantIssue(cust.id, age, issueKey);
-
+    const info = await processSealPayload(req.body);
+    console.log(`[WEBHOOK] billing_succeeded processed for ${info.email} (${info.prenom}, ${info.age} ans, ${info.planType})`);
     res.status(200).send("ok");
   } catch (e) {
     console.error(e);
@@ -162,7 +173,7 @@ app.post("/webhooks/seal/billing_succeeded", async (req, res) => {
 app.post("/webhooks/seal/subscription_cancelled", async (req, res) => {
   try {
     const p = req.body;
-    const email = p.customer?.email || p.customer_email;
+    const email = p.email || p.customer?.email || p.customer_email;
     const cust = await findCustomerByEmail(email);
     if (cust) await setStatus(cust.id, "cancelled");
     res.status(200).send("ok");
@@ -211,5 +222,30 @@ app.get("/debug/customer", async (req, res) => {
 
 app.get("/debug/numeros", (req, res) => res.json(numeros));
 
+// ---- Route de simulation SEAL ----
+app.post("/simulate-seal", async (req, res) => {
+  try {
+    // Exemple payload simulé
+    const payload = {
+      email: req.body.email || "test@sealsubscriptions.com",
+      first_name: req.body.prenom || "Lucas",
+      last_name: req.body.nom || "Magnier",
+      billing_interval: req.body.billing_interval || "month",
+      items: [
+        {
+          properties: [
+            { name: "prenom", value: req.body.prenom || "Lucas" },
+            { name: "age", value: req.body.age || "3" }
+          ]
+        }
+      ]
+    };
+    const info = await processSealPayload(payload);
+    res.json({ message: "Simulation OK", info });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.listen(PORT, () => console.log(`Festivio backend running on :${PORT}`));
+
