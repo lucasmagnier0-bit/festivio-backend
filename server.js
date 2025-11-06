@@ -23,7 +23,7 @@ fs.watchFile(path.resolve("./data/numeros.json"), loadNumeros);
 
 function currentIssueKey() {
   const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 function getNumeroLink(age, issueKey) {
@@ -110,12 +110,14 @@ const setStatus = (customerId, status) =>
 
 const setExpiryPlusMonths = async (customerId, months) => {
   const d = new Date();
-  d.setMonth(d.getMonth()+months);
+  d.setMonth(d.getMonth() + months);
   await upsertMetafield(customerId, "festivio", "subscription_expiry", "date", d.toISOString());
 };
 
-// ---- Webhooks SEAL ----
+// ---- Traitement commun payload SEAL ----
 const processSealPayload = async (payload) => {
+  console.log("🔔 Payload SEAL reçu :", JSON.stringify(payload, null, 2)); // <-- log ici pour inspection
+
   const email = payload.email || payload.customer?.email || payload.customer_email;
   if (!email) throw new Error("Email not found in payload");
 
@@ -148,10 +150,11 @@ const processSealPayload = async (payload) => {
   return { email, prenom, age, planType };
 };
 
+// ---- Webhooks SEAL ----
 app.post("/webhooks/seal/subscription_created", async (req, res) => {
   try {
     const info = await processSealPayload(req.body);
-    console.log(`[WEBHOOK] subscription_created processed for ${info.email} (${info.prenom}, ${info.age} ans, ${info.planType})`);
+    console.log(`[WEBHOOK] subscription_created traité pour ${info.email} (${info.prenom}, ${info.age} ans, ${info.planType})`);
     res.status(200).send("ok");
   } catch (e) {
     console.error(e);
@@ -162,7 +165,7 @@ app.post("/webhooks/seal/subscription_created", async (req, res) => {
 app.post("/webhooks/seal/billing_succeeded", async (req, res) => {
   try {
     const info = await processSealPayload(req.body);
-    console.log(`[WEBHOOK] billing_succeeded processed for ${info.email} (${info.prenom}, ${info.age} ans, ${info.planType})`);
+    console.log(`[WEBHOOK] billing_succeeded traité pour ${info.email} (${info.prenom}, ${info.age} ans, ${info.planType})`);
     res.status(200).send("ok");
   } catch (e) {
     console.error(e);
@@ -248,4 +251,5 @@ app.post("/simulate-seal", async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Festivio backend running on :${PORT}`));
+
 
