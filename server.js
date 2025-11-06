@@ -19,7 +19,7 @@ function loadNumeros() {
   }
 }
 loadNumeros();
-fs.watchFile(path.resolve("./data/numeros.json"), loadNumeros);
+fs.watchFile(path.resolve("./assets/numeros.json"), loadNumeros);
 
 function currentIssueKey() {
   const d = new Date();
