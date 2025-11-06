@@ -9,7 +9,7 @@ let numeros = {};
 // --- Chargement du numeros.json ---
 function loadNumeros() {
   try {
-    const filePath = path.resolve("./assets/numeros.json");
+    const filePath = path.resolve("./data/numeros.json");
     const content = fs.readFileSync(filePath, "utf8");
     numeros = JSON.parse(content);
     console.log("✅ numeros.json chargé avec succès");
@@ -19,7 +19,7 @@ function loadNumeros() {
   }
 }
 loadNumeros();
-fs.watchFile(path.resolve("./assets/numeros.json"), loadNumeros);
+fs.watchFile(path.resolve("./data/numeros.json"), loadNumeros);
 
 function currentIssueKey() {
   const d = new Date();
