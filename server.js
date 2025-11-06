@@ -209,4 +209,7 @@ app.get("/debug/customer", async (req, res) => {
   }
 });
 
+app.get("/debug/numeros", (req, res) => res.json(numeros));
+
+
 app.listen(PORT, () => console.log(`Festivio backend running on :${PORT}`));
