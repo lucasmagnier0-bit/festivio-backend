@@ -152,6 +152,11 @@ const processSealPayload = async (payload) => {
 
 // ---- Webhooks SEAL ----
 app.post("/webhooks/seal/subscription_created", async (req, res) => {
+
+  console.log("=== SEAL WEBHOOK RECEIVED ===");
+console.log("Headers:", req.headers);
+console.log("Body:", JSON.stringify(req.body, null, 2));
+  
   try {
     const info = await processSealPayload(req.body);
     console.log(`[WEBHOOK] subscription_created traité pour ${info.email} (${info.prenom}, ${info.age} ans, ${info.planType})`);
