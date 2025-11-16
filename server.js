@@ -41,8 +41,9 @@ const app = express();
 app.use(bodyParser.json({ type: "*/*" }));
 
 // ---- Utils Shopify ----
-const sFetch = async (path, method = "GET", body) => {
-  const res = await fetch(`https://${SHOPIFY_STORE}/admin/api/2024-10/${path}`, {
+const sFetch = async (pathSuffix, method = "GET", body) => {
+  const url = `https://${SHOPIFY_STORE}/admin/api/2024-10/${pathSuffix}`;
+  const res = await fetch(url, {
     method,
     headers: {
       "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
@@ -50,34 +51,76 @@ const sFetch = async (path, method = "GET", body) => {
     },
     body: body ? JSON.stringify(body) : undefined
   });
-  if (!res.ok) throw new Error(`[Shopify ${method} ${path}] ${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`[Shopify ${method} ${pathSuffix}] ${res.status} ${txt}`);
+  }
   return res.json();
 };
 
 const findCustomerByEmail = async (email) => {
-  const data = await sFetch(`customers/search.json?query=email:${encodeURIComponent(email)}`);
+  const data = await sFetch(
+    `customers/search.json?query=email:${encodeURIComponent(email)}`
+  );
   return data.customers?.[0] || null;
 };
 
 const getCustomerMetafields = async (customerId) => {
   const data = await sFetch(`customers/${customerId}/metafields.json`);
   const mf = {};
-  for (const m of data.metafields || []) if (m.namespace === "festivio") mf[m.key] = m;
+  for (const m of data.metafields || []) {
+    if (m.namespace === "festivio") mf[m.key] = m;
+  }
   return mf;
+};
+
+// 🔎 Récupère l'âge sur le produit via metafield produit festivo.age
+const getProductAge = async (productId) => {
+  if (!productId) return null;
+  try {
+    const data = await sFetch(`products/${productId}/metafields.json`);
+    const mf = (data.metafields || []).find(
+      (m) => m.namespace === "festivio" && m.key === "age"
+    );
+    if (!mf) {
+      console.warn(`⚠️ Pas de metafield festivo.age pour le produit ${productId}`);
+      return null;
+    }
+    console.log(`🎯 Age produit ${productId} = ${mf.value}`);
+    return mf.value;
+  } catch (e) {
+    console.error("❌ Erreur getProductAge:", e.message);
+    return null;
+  }
 };
 
 const upsertMetafield = async (customerId, namespace, key, type, value) => {
   try {
-    return (await sFetch(`metafields.json`, "POST", {
-      metafield: { namespace, key, type, value, owner_resource: "customer", owner_id: customerId }
-    })).metafield;
+    // tentative de création
+    return (
+      await sFetch(`metafields.json`, "POST", {
+        metafield: {
+          namespace,
+          key,
+          type,
+          value,
+          owner_resource: "customer",
+          owner_id: customerId
+        }
+      })
+    ).metafield;
   } catch {
+    // sinon on met à jour un existant
     const all = await sFetch(`customers/${customerId}/metafields.json`);
-    const found = (all.metafields || []).find(m => m.namespace === namespace && m.key === key);
+    const found = (all.metafields || []).find(
+      (m) => m.namespace === namespace && m.key === key
+    );
     if (!found) throw new Error("Metafield not found for update");
-    return (await sFetch(`metafields/${found.id}.json`, "PUT", {
-      metafield: { id: found.id, type, value }
-    })).metafield;
+    return (
+      await sFetch(`metafields/${found.id}.json`, "PUT", {
+        metafield: { id: found.id, type, value }
+      })
+    ).metafield;
   }
 };
 
@@ -86,14 +129,16 @@ const grantIssue = async (customerId, age, issueKey) => {
   const mf = await getCustomerMetafields(customerId);
   let owned = [];
   if (mf.owned_numbers?.value) {
-    try { owned = JSON.parse(mf.owned_numbers.value); } catch {}
+    try {
+      owned = JSON.parse(mf.owned_numbers.value);
+    } catch {}
   }
 
   const conf = getNumeroLink(age, issueKey);
   if (!conf) throw new Error(`No mapping for ${issueKey}/${age}`);
 
   // On évite les doublons
-  if (!owned.some(i => i.key === issueKey && i.age === age)) {
+  if (!owned.some((i) => i.key === issueKey && i.age === age)) {
     owned.push({
       key: issueKey,
       age,
@@ -102,23 +147,42 @@ const grantIssue = async (customerId, age, issueKey) => {
     });
   }
 
-  await upsertMetafield(customerId, "festivio", "owned_numbers", "json", JSON.stringify(owned));
+  await upsertMetafield(
+    customerId,
+    "festivio",
+    "owned_numbers",
+    "json",
+    JSON.stringify(owned)
+  );
 };
 
 const setStatus = (customerId, status) =>
-  upsertMetafield(customerId, "festivio", "subscription_status", "single_line_text_field", status);
+  upsertMetafield(
+    customerId,
+    "festivio",
+    "subscription_status",
+    "single_line_text_field",
+    status
+  );
 
 const setExpiryPlusMonths = async (customerId, months) => {
   const d = new Date();
   d.setMonth(d.getMonth() + months);
-  await upsertMetafield(customerId, "festivio", "subscription_expiry", "date", d.toISOString());
+  await upsertMetafield(
+    customerId,
+    "festivio",
+    "subscription_expiry",
+    "date",
+    d.toISOString()
+  );
 };
 
 // ---- Traitement commun payload SEAL ----
 const processSealPayload = async (payload) => {
-  console.log("🔔 Payload SEAL reçu :", JSON.stringify(payload, null, 2)); // <-- log ici pour inspection
+  console.log("🔔 Payload SEAL reçu :", JSON.stringify(payload, null, 2));
 
-  const email = payload.email || payload.customer?.email || payload.customer_email;
+  const email =
+    payload.email || payload.customer?.email || payload.customer_email;
   if (!email) throw new Error("Email not found in payload");
 
   const cust = await findCustomerByEmail(email);
@@ -128,15 +192,39 @@ const processSealPayload = async (payload) => {
   let nom = payload.last_name || payload.s_last_name || "";
   let age = NUM_DEFAULT_AGE;
 
-  if (payload.items && payload.items[0]?.properties) {
+  // 1) Si SEAL envoie des properties (ex: via personnalisations sur le front)
+  if (
+    payload.items &&
+    payload.items[0]?.properties &&
+    payload.items[0].properties.length
+  ) {
     const props = payload.items[0].properties;
     for (const prop of props) {
-      if (prop.name?.toLowerCase() === "prenom") prenom = prop.value;
-      if (prop.name?.toLowerCase() === "age") age = prop.value;
+      const name = (prop.name || "").toLowerCase();
+      if (name === "prenom" || name === "prénom") prenom = prop.value;
+      if (name === "age" || name === "âge") age = prop.value;
     }
-  } else if (payload.metadata?.prenom) {
-    prenom = payload.metadata.prenom;
-    age = payload.metadata.age || NUM_DEFAULT_AGE;
+  }
+  // 2) Si SEAL envoie metadata.age (au cas où tu utilises ça plus tard)
+  else if (payload.metadata?.age) {
+    age = payload.metadata.age;
+    if (payload.metadata.prenom) prenom = payload.metadata.prenom;
+  }
+  // 3) Sinon : on déduit l'âge via le produit Shopify (metafield produit festivo.age)
+  else if (payload.items && payload.items[0]) {
+    const item = payload.items[0];
+    const productId =
+      item.product_id ||
+      item.shopify_product_id ||
+      (item.product && item.product.id) ||
+      null;
+
+    if (productId) {
+      const productAge = await getProductAge(productId);
+      if (productAge) {
+        age = productAge;
+      }
+    }
   }
 
   const planType = payload.billing_interval || "month";
@@ -152,25 +240,32 @@ const processSealPayload = async (payload) => {
 
 // ---- Webhooks SEAL ----
 app.post("/webhooks/seal/subscription_created", async (req, res) => {
+  console.log("=== SEAL WEBHOOK RECEIVED (subscription_created) ===");
+  console.log("Headers:", req.headers);
+  console.log("Body:", JSON.stringify(req.body, null, 2));
 
-  console.log("=== SEAL WEBHOOK RECEIVED ===");
-console.log("Headers:", req.headers);
-console.log("Body:", JSON.stringify(req.body, null, 2));
-  
   try {
     const info = await processSealPayload(req.body);
-    console.log(`[WEBHOOK] subscription_created traité pour ${info.email} (${info.prenom}, ${info.age} ans, ${info.planType})`);
+    console.log(
+      `[WEBHOOK] subscription_created traité pour ${info.email} (${info.prenom}, ${info.age} ans, ${info.planType})`
+    );
     res.status(200).send("ok");
   } catch (e) {
     console.error(e);
-    res.status(200).send("ok");
+    res.status(200).send("ok"); // on renvoie 200 pour éviter les retries SEAL
   }
 });
 
 app.post("/webhooks/seal/billing_succeeded", async (req, res) => {
+  console.log("=== SEAL WEBHOOK RECEIVED (billing_succeeded) ===");
+  console.log("Headers:", req.headers);
+  console.log("Body:", JSON.stringify(req.body, null, 2));
+
   try {
     const info = await processSealPayload(req.body);
-    console.log(`[WEBHOOK] billing_succeeded traité pour ${info.email} (${info.prenom}, ${info.age} ans, ${info.planType})`);
+    console.log(
+      `[WEBHOOK] billing_succeeded traité pour ${info.email} (${info.prenom}, ${info.age} ans, ${info.planType})`
+    );
     res.status(200).send("ok");
   } catch (e) {
     console.error(e);
@@ -179,11 +274,23 @@ app.post("/webhooks/seal/billing_succeeded", async (req, res) => {
 });
 
 app.post("/webhooks/seal/subscription_cancelled", async (req, res) => {
+  console.log("=== SEAL WEBHOOK RECEIVED (subscription_cancelled) ===");
+  console.log("Headers:", req.headers);
+  console.log("Body:", JSON.stringify(req.body, null, 2));
+
   try {
     const p = req.body;
-    const email = p.email || p.customer?.email || p.customer_email;
+    const email =
+      p.email || p.customer?.email || p.customer_email;
+    if (!email) throw new Error("Email not found in payload (cancel)");
+
     const cust = await findCustomerByEmail(email);
-    if (cust) await setStatus(cust.id, "cancelled");
+    if (cust) {
+      await setStatus(cust.id, "cancelled");
+      console.log(`[WEBHOOK] subscription_cancelled pour ${email}`);
+    } else {
+      console.warn(`[WEBHOOK] subscription_cancelled : client introuvable ${email}`);
+    }
     res.status(200).send("ok");
   } catch (e) {
     console.error(e);
@@ -194,7 +301,11 @@ app.post("/webhooks/seal/subscription_cancelled", async (req, res) => {
 // ---- Routes de test ----
 app.get("/grant", async (req, res) => {
   try {
-    const { email, age = NUM_DEFAULT_AGE, issue = currentIssueKey() } = req.query;
+    const {
+      email,
+      age = NUM_DEFAULT_AGE,
+      issue = currentIssueKey()
+    } = req.query;
     const cust = await findCustomerByEmail(email);
     if (!cust) throw new Error(`Customer not found: ${email}`);
     await grantIssue(cust.id, age, issue);
@@ -208,11 +319,16 @@ app.get("/debug/customer", async (req, res) => {
   try {
     const { email } = req.query;
     const cust = await findCustomerByEmail(email);
-    if (!cust) return res.status(404).json({ error: "Customer not found" });
+    if (!cust)
+      return res.status(404).json({ error: "Customer not found" });
 
     const mf = await getCustomerMetafields(cust.id);
     let owned = [];
-    if (mf.owned_numbers?.value) { try { owned = JSON.parse(mf.owned_numbers.value); } catch {} }
+    if (mf.owned_numbers?.value) {
+      try {
+        owned = JSON.parse(mf.owned_numbers.value);
+      } catch {}
+    }
 
     res.json({
       customer_id: cust.id,
@@ -233,17 +349,18 @@ app.get("/debug/numeros", (req, res) => res.json(numeros));
 // ---- Route de simulation SEAL ----
 app.post("/simulate-seal", async (req, res) => {
   try {
-    // Exemple payload simulé
+    // Exemple payload simulé (pour tester sans SEAL)
     const payload = {
       email: req.body.email || "test@sealsubscriptions.com",
-      first_name: req.body.prenom || "Lucas",
-      last_name: req.body.nom || "Magnier",
+      first_name: req.body.prenom || "Enfant",
+      last_name: req.body.nom || "Test",
       billing_interval: req.body.billing_interval || "month",
       items: [
         {
+          product_id: req.body.product_id || null,
           properties: [
-            { name: "prenom", value: req.body.prenom || "Lucas" },
-            { name: "age", value: req.body.age || "3" }
+            { name: "prenom", value: req.body.prenom || "Enfant" },
+            { name: "age", value: req.body.age || NUM_DEFAULT_AGE }
           ]
         }
       ]
@@ -255,6 +372,9 @@ app.post("/simulate-seal", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Festivio backend running on :${PORT}`));
+app.listen(PORT, () =>
+  console.log(`Festivio backend running on port ${PORT}`)
+);
+
 
 
