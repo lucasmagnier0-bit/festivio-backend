@@ -273,6 +273,47 @@ app.post("/webhooks/seal/billing_succeeded", async (req, res) => {
   }
 });
 
+// ---- Webhook Shopify : achat à l'unité ----
+app.post("/webhooks/shopify/order_paid", async (req, res) => {
+  try {
+    console.log("=== WEBHOOK SHOPIFY ORDER PAID ===");
+    console.log(JSON.stringify(req.body, null, 2));
+
+    const order = req.body;
+    const email = order.email || order.customer?.email;
+    if (!email) throw new Error("Order has no email");
+
+    const customer = await findCustomerByEmail(email);
+    if (!customer) throw new Error("Customer not found: " + email);
+
+    const issueKey = currentIssueKey();
+    let added = false;
+
+    for (const line of order.line_items) {
+      const productId = line.product_id;
+
+      // on récupère l'âge via metafield produit
+      const productAge = await getProductAge(productId);
+
+      if (!productAge) {
+        console.log(`⏭ Produit ${productId} ignoré (pas d'âge festivo.age)`);
+        continue;
+      }
+
+      // si âge détecté => achat à l'unité d’un magazine
+      await grantIssue(customer.id, productAge, issueKey);
+      console.log(`🎁 Ajout du numéro ${issueKey} pour âge ${productAge}`);
+      added = true;
+    }
+
+    res.status(200).send("ok");
+  } catch (e) {
+    console.error("❌ ERROR Shopify order_paid:", e.message);
+    res.status(200).send("ok");
+  }
+});
+
+
 app.post("/webhooks/seal/subscription_cancelled", async (req, res) => {
   console.log("=== SEAL WEBHOOK RECEIVED (subscription_cancelled) ===");
   console.log("Headers:", req.headers);
